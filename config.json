@@ -1,0 +1,9 @@
+{
+    "download_dir": "/downloads",
+    "temp_dir": "/temp",
+    "check_schedules": [
+        "08:00",
+        "20:00"
+    ],
+    "show_browser": false
+}
