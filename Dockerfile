@@ -1,5 +1,5 @@
 # Base image with Python and Playwright pre-installed
-FROM mcr.microsoft.com/playwright/python:v1.45.0-jammy
+FROM mcr.microsoft.com/playwright/python:v1.49.0-noble
 
 # Install ffmpeg for media merging
 RUN apt-get update && apt-get install -y --no-install-recommends \
