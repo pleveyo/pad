@@ -1,4 +1,4 @@
-# Base image with Python and Playwright pre-installed
+# Base image with Python 3.12 and Playwright pre-installed
 FROM mcr.microsoft.com/playwright/python:v1.49.0-noble
 
 # Install ffmpeg for media merging
@@ -18,5 +18,8 @@ RUN playwright install chromium
 # Copy application files
 COPY . /app/
 
+# Expose web server port
+EXPOSE 5000
+
 # Default entry point
-CMD ["python", "pad.py", "--check"]
+CMD ["python", "pad.py"]

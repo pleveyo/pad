@@ -4,16 +4,36 @@ import sys
 import json
 import time
 import shutil
+import logging
+import threading
+import schedule
+from flask import Flask, render_template, request, redirect, url_for
 from playwright.sync_api import sync_playwright
 import yt_dlp
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(APP_DIR, "config.json")
 DATABASE_FILE = os.path.join(APP_DIR, "active_series.json")
+LOG_FILE = os.path.join(APP_DIR, "pad.log")
+
+# Setup logging to write to both stdout and a log file
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
+is_running = False
+job_lock = threading.Lock()
+
+app = Flask(__name__)
 
 
 def load_config():
-    """Loads config.json or initializes default configuration for containerized environments."""
+    """Loads config.json or returns default configuration."""
     default_config = {
         "download_dir": "/downloads",
         "temp_dir": "/temp",
@@ -57,7 +77,7 @@ def save_series(series_dict):
 
 
 def sanitize_filename(name):
-    """Removes invalid filesystem characters while preserving special symbols like ★."""
+    """Removes invalid filesystem characters."""
     return re.sub(r'[\\/*?:"<>|]', "", name).strip()
 
 
@@ -80,7 +100,7 @@ def get_local_episodes(target_dir, clean_name):
 
 
 def launch_browser(p, show=False):
-    """Launches Chromium with headless container flags to avoid memory sandbox issues."""
+    """Launches Chromium with headless container arguments."""
     args = [
         "--disable-blink-features=AutomationControlled",
         "--mute-audio",
@@ -91,7 +111,7 @@ def launch_browser(p, show=False):
 
 
 def check_status_and_latest_ep(page, series_url):
-    """Navigates to series page and detects total published episodes and status."""
+    """Inspects series page to determine state and total episodes."""
     page.goto(series_url, wait_until="domcontentloaded")
     time.sleep(2)
 
@@ -134,7 +154,7 @@ def check_status_and_latest_ep(page, series_url):
 
 
 def download_episode(page, series_url, episode_num, target_dir, temp_dir, series_name):
-    """Intercepts media stream and downloads the episode using yt-dlp."""
+    """Intercepts media stream and triggers download."""
     episode_url = f"{series_url.rstrip('/')}/{episode_num}/"
     base_filename = f"{series_name} {episode_num:02d}"
 
@@ -145,7 +165,7 @@ def download_episode(page, series_url, episode_num, target_dir, temp_dir, series
     temp_mp4 = os.path.join(temp_dir, f"{base_filename}.mp4")
     final_mp4 = os.path.join(target_dir, f"{base_filename}.mp4")
 
-    print(f"\n  -> Opening Episode {episode_num:02d}: {episode_url}")
+    logging.info(f"Opening Episode {episode_num:02d}: {episode_url}")
     detected_stream = {"url": None, "referer": episode_url}
 
     def intercept_request(request):
@@ -154,7 +174,7 @@ def download_episode(page, series_url, episode_num, target_dir, temp_dir, series
             if not any(ad in url for ad in ["doubleclick", "googlesyndication", "imasdk"]):
                 detected_stream["url"] = request.url
                 detected_stream["referer"] = request.headers.get("referer", episode_url)
-                print(f"  [+] Stream detected: {request.url[:75]}...")
+                logging.info(f"Stream detected: {request.url[:75]}...")
 
     page.on("request", intercept_request)
     page.goto(episode_url, wait_until="domcontentloaded")
@@ -186,27 +206,27 @@ def download_episode(page, series_url, episode_num, target_dir, temp_dir, series
                 'User-Agent': user_agent
             },
             'concurrent_fragment_downloads': 4,
-            'quiet': False
+            'quiet': True
         }
 
         try:
-            print(f"  [*] Downloading to temporary folder: {temp_mp4}")
+            logging.info(f"Downloading to temp directory: {temp_mp4}")
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([detected_stream["url"]])
 
             if os.path.exists(temp_mp4):
-                print(f"  [*] Moving file to final destination: {final_mp4}")
+                logging.info(f"Moving file to final location: {final_mp4}")
                 shutil.move(temp_mp4, final_mp4)
-                print(f"  [✓] Episode {episode_num:02d} ready: {final_mp4}")
+                logging.info(f"Episode {episode_num:02d} completed successfully: {final_mp4}")
                 return True
             else:
-                print(f"  [!] Final file not found in temp folder for episode {episode_num:02d}.")
+                logging.error(f"File not found in temp folder: {temp_mp4}")
                 return False
         except Exception as err:
-            print(f"  [!] Download or move error on episode {episode_num:02d}: {err}")
+            logging.error(f"Download/move error on episode {episode_num:02d}: {err}")
             return False
     else:
-        print(f"  [!] Video stream not found for episode {episode_num:02d}.")
+        logging.warning(f"Video stream not detected for episode {episode_num:02d}.")
         return False
 
 
@@ -218,7 +238,7 @@ def process_series(p, series_url, series_name, config):
     temp_dir = config["temp_dir"]
 
     os.makedirs(target_dir, exist_ok=True)
-    print(f"[*] Target directory: {target_dir}")
+    logging.info(f"Checking series '{clean_name}' at {target_dir}")
 
     browser = launch_browser(p, show=config.get("show_browser", False))
     context = browser.new_context(viewport={"width": 1280, "height": 720})
@@ -230,7 +250,7 @@ def process_series(p, series_url, series_name, config):
     missing_episodes = sorted(list(all_published - local_episodes))
 
     status_str = "Completed" if is_completed else "Airing"
-    print(f"[*] Status: {status_str} | Published: {latest_ep} | Local: {sorted(list(local_episodes))} | Missing: {missing_episodes}")
+    logging.info(f"Status: {status_str} | Published: {latest_ep} | Local: {sorted(list(local_episodes))} | Missing: {missing_episodes}")
 
     all_downloaded = (latest_ep > 0)
     for ep in missing_episodes:
@@ -242,69 +262,116 @@ def process_series(p, series_url, series_name, config):
     return is_completed and all_downloaded
 
 
-def display_dashboard(config, active_series):
-    """Displays project status overview in CLI."""
-    browser_mode = "VISIBLE" if config.get("show_browser", False) else "HEADLESS (Background)"
+def run_full_check():
+    """Worker routine that checks all tracked series."""
+    global is_running
+    with job_lock:
+        is_running = True
+        try:
+            logging.info("Starting global check...")
+            config = load_config()
+            active_series = load_series()
 
-    print("=========================================================")
-    print("         PAD (Pleveyo Anime Downloader) - STATUS         ")
-    print("=========================================================")
-    print(f" Download directory : {config['download_dir']}")
-    print(f" Temporary directory: {config['temp_dir']}")
-    print(f" Browser mode       : {browser_mode}")
-    print("---------------------------------------------------------")
-    if not active_series:
-        print(" Active tracked series (0): None")
-    else:
-        print(f" Active tracked series ({len(active_series)}):")
-        for i, (url, name) in enumerate(active_series.items(), 1):
-            print(f"   {i}. {name}  -->  {url}")
-    print("=========================================================")
-
-
-def main():
-    config = load_config()
-    active_series = load_series()
-
-    if len(sys.argv) < 2 or sys.argv[1] in ["--status", "--list"]:
-        display_dashboard(config, active_series)
-        return
-
-    with sync_playwright() as p:
-        # MODE 1: Automated or manual execution via --check
-        if sys.argv[1] == "--check":
             if not active_series:
-                print("[*] No active series pending review.")
+                logging.info("No active series pending review.")
                 return
 
-            for url, name in list(active_series.items()):
-                print(f"\n================ Checking: {name} ================")
-                completed_and_full = process_series(p, url, name, config)
-                if completed_and_full:
-                    print(f"[✓] '{name}' is completed and fully downloaded. Removing from tracking.")
-                    del active_series[url]
-                    save_series(active_series)
+            with sync_playwright() as p:
+                for url, name in list(active_series.items()):
+                    logging.info(f"--- Processing: {name} ---")
+                    completed_and_full = process_series(p, url, name, config)
+                    if completed_and_full:
+                        logging.info(f"Series '{name}' is completed and fully downloaded. Removing from tracking.")
+                        del active_series[url]
+                        save_series(active_series)
 
-        # MODE 2: Add or update series ("<URL> <Name>")
-        else:
-            url_input = sys.argv[1]
-            name_input = " ".join(sys.argv[2:])
-            if not name_input:
-                print("[!] Error: Specify a series name after the URL.")
-                return
+            logging.info("Global check finished successfully.")
+        except Exception as e:
+            logging.error(f"Unexpected error during global check: {e}")
+        finally:
+            is_running = False
 
-            completed_and_full = process_series(p, url_input, name_input, config)
 
-            if not completed_and_full:
-                active_series[url_input] = name_input
-                save_series(active_series)
-                print(f"\n[+] '{name_input}' added to tracking list.")
-            else:
-                if url_input in active_series:
-                    del active_series[url_input]
-                    save_series(active_series)
-                print(f"\n[✓] '{name_input}' is complete and up to date.")
+def scheduler_loop():
+    """Background scheduler thread running checks at configured intervals."""
+    config = load_config()
+    schedules = config.get("check_schedules", ["08:00", "20:00"])
+
+    for sched_time in schedules:
+        schedule.every().day.at(sched_time).do(
+            lambda: threading.Thread(target=run_full_check, daemon=True).start()
+        )
+        logging.info(f"Scheduled automated check daily at {sched_time}")
+
+    while True:
+        schedule.run_pending()
+        time.sleep(30)
+
+
+@app.route("/")
+def index():
+    series = load_series()
+    log_content = ""
+    if os.path.exists(LOG_FILE):
+        try:
+            with open(LOG_FILE, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+                log_content = "".join(lines[-150:])  # Show latest 150 lines
+        except Exception:
+            log_content = "Failed to load log file."
+    else:
+        log_content = "No logs recorded yet."
+
+    message = request.args.get("message")
+    return render_template("index.html", series=series, logs=log_content, is_running=is_running, message=message)
+
+
+@app.route("/add", methods=["POST"])
+def add_series():
+    name = request.form.get("name", "").strip()
+    url = request.form.get("url", "").strip()
+
+    if name and url:
+        series = load_series()
+        series[url] = name
+        save_series(series)
+        logging.info(f"Added series: '{name}' ({url})")
+        # Trigger background check for newly added series
+        if not is_running:
+            threading.Thread(target=run_full_check, daemon=True).start()
+        return redirect(url_for("index", message=f"Added '{name}'. Check started in background."))
+
+    return redirect(url_for("index", message="Error: Both name and URL are required."))
+
+
+@app.route("/delete", methods=["POST"])
+def delete_series():
+    url = request.form.get("url")
+    if url:
+        series = load_series()
+        if url in series:
+            removed_name = series.pop(url)
+            save_series(series)
+            logging.info(f"Removed series: '{removed_name}' ({url})")
+            return redirect(url_for("index", message=f"Removed '{removed_name}'."))
+
+    return redirect(url_for("index"))
+
+
+@app.route("/run-check", methods=["POST"])
+def trigger_check():
+    global is_running
+    if not is_running:
+        threading.Thread(target=run_full_check, daemon=True).start()
+        return redirect(url_for("index", message="Manual check initiated."))
+    else:
+        return redirect(url_for("index", message="A check is already running."))
 
 
 if __name__ == "__main__":
-    main()
+    # Start scheduler daemon thread
+    t = threading.Thread(target=scheduler_loop, daemon=True)
+    t.start()
+
+    # Start Flask Web Interface
+    app.run(host="0.0.0.0", port=5000)

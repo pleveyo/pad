@@ -1,2 +1,4 @@
 playwright
 yt-dlp
+flask
+schedule

@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PAD - Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .log-box {
+            background-color: #121212;
+            color: #00ff66;
+            font-family: monospace;
+            font-size: 0.85rem;
+            max-height: 380px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body class="p-4 bg-body-tertiary">
+<div class="container-fluid" style="max-width: 1100px;">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h2 class="mb-0">Pleveyo Anime Downloader</h2>
+            <small class="text-secondary">Automated Series Monitor & Downloader</small>
+        </div>
+        <form action="/run-check" method="POST">
+            <button class="btn btn-primary" type="submit" {% if is_running %}disabled{% endif %}>
+                {% if is_running %}
+                    <span class="spinner-border spinner-border-sm me-1"></span> Running Check...
+                {% else %}
+                    ▶ Run Check Now
+                {% endif %}
+            </button>
+        </form>
+    </div>
+
+    <!-- Alert Messages -->
+    {% if message %}
+    <div class="alert alert-info alert-dismissible fade show" role="alert">
+        {{ message }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+    {% endif %}
+
+    <div class="row g-4">
+        <!-- Left Column: Add & Active Series -->
+        <div class="col-lg-6">
+            <!-- Add Series Card -->
+            <div class="card mb-4 border-0 shadow-sm">
+                <div class="card-header bg-body">
+                    <h5 class="card-title mb-0">Add New Series</h5>
+                </div>
+                <div class="card-body">
+                    <form action="/add" method="POST">
+                        <div class="mb-3">
+                            <label class="form-label">Series Name</label>
+                            <input type="text" name="name" class="form-control" placeholder="e.g. Magical★Explorer" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Series URL</label>
+                            <input type="url" name="url" class="form-control" placeholder="https://jkanime.net/..." required>
+                        </div>
+                        <button type="submit" class="btn btn-success w-100">+ Add Series</button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Active Series Card -->
+            <div class="card border-0 shadow-sm">
+                <div class="card-header bg-body d-flex justify-content-between align-items-center">
+                    <h5 class="card-title mb-0">Tracked Series</h5>
+                    <span class="badge bg-secondary">{{ series|length }} Active</span>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-hover align-middle mb-0">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for url, name in series.items() %}
+                                <tr>
+                                    <td>
+                                        <strong>{{ name }}</strong><br>
+                                        <small class="text-secondary"><a href="{{ url }}" target="_blank" class="text-decoration-none text-muted">{{ url }}</a></small>
+                                    </td>
+                                    <td style="width: 90px;">
+                                        <form action="/delete" method="POST" onsubmit="return confirm('Remove this series from tracking?');">
+                                            <input type="hidden" name="url" value="{{ url }}">
+                                            <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
+                                        </form>
+                                    </td>
+                                </tr>
+                                {% else %}
+                                <tr>
+                                    <td colspan="2" class="text-center py-4 text-muted">No series tracked yet. Add one above!</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Column: System Logs -->
+        <div class="col-lg-6">
+            <div class="card border-0 shadow-sm h-100">
+                <div class="card-header bg-body d-flex justify-content-between align-items-center">
+                    <h5 class="card-title mb-0">Execution Log</h5>
+                    <small class="text-secondary">Schedules: 08:00 & 20:00</small>
+                </div>
+                <div class="card-body p-2 d-flex flex-column">
+                    <div class="log-box p-3 rounded flex-grow-1" id="logBox">{{ logs }}</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<script>
+    // Auto-scroll logs to bottom
+    const box = document.getElementById('logBox');
+    if (box) { box.scrollTop = box.scrollHeight; }
+</script>
+</body>
+</html>
